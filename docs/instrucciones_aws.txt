@@ -1,0 +1,266 @@
+INSTRUCCIONES PASO A PASO PARA DESPLEGAR Y EJECUTAR EL SISTEMA EN AWS (UBUNTU 24.04)
+
+============================================================
+0. REQUISITOS PREVIOS
+============================================================
+
+- Cuenta de AWS con acceso a EC2 y Route 53 (opcional para DNS).
+- Llave .pem para conectarte por SSH a la instancia.
+- Proyecto subido a un repositorio Git (por ejemplo GitHub).
+- En tu PC (Windows):
+  - Git instalado.
+  - Python 3 instalado.
+  - Java JDK instalado.
+
+============================================================
+1. CREAR INSTANCIA EC2 UBUNTU 24.04
+============================================================
+
+1. Entra a la consola de AWS y ve a EC2.
+2. Pulsa "Launch instance".
+3. Configura:
+   - Nombre: iot-monitor-ubuntu24 (o similar).
+   - AMI: Ubuntu Server 24.04 LTS (x86_64).
+   - Tipo de instancia: t2.micro o t3.micro.
+   - Par de claves: selecciona o crea uno nuevo y descárgalo (.pem).
+4. Configura el Security Group con estas reglas de ENTRADA:
+   - SSH, puerto 22, origen tu IP (o 0.0.0.0/0 solo para pruebas).
+   - TCP personalizado, puerto 5000, origen 0.0.0.0/0.
+   - TCP personalizado, puerto 5001, origen 0.0.0.0/0.
+5. Lanza la instancia y espera a que el estado sea "running".
+6. Anota la IP pública de la instancia.
+
+============================================================
+2. CONECTARSE POR SSH DESDE WINDOWS
+============================================================
+
+1. Abre PowerShell en tu PC.
+2. Ve a la carpeta donde está tu archivo .pem, por ejemplo:
+
+   cd C:\ruta\a\tu\clave
+
+3. Conéctate a la instancia (sustituye IP_PUBLICA_EC2 y nombre de la clave):
+
+   ssh -i .\mi-clave.pem ubuntu@IP_PUBLICA_EC2
+
+4. Acepta la huella (escribe yes) cuando lo pida.
+
+============================================================
+3. INSTALAR HERRAMIENTAS EN UBUNTU 24.04
+============================================================
+
+Dentro de la sesión SSH (ya como usuario ubuntu):
+
+1. Actualiza paquetes e instala Git y Docker:
+
+   sudo apt-get update
+   sudo apt-get install -y git docker.io python3 python3-pip
+
+2. Habilita y arranca Docker:
+
+   sudo systemctl enable --now docker
+
+3. Permite que el usuario ubuntu use Docker sin sudo:
+
+   sudo usermod -aG docker ubuntu
+
+4. Sal de la sesión SSH y entra de nuevo para que el cambio de grupo se aplique:
+
+   exit
+
+   (vuelve a conectarte como en el paso 2)
+
+5. Comprueba Docker:
+
+   docker run hello-world
+
+============================================================
+4. CLONAR EL PROYECTO EN LA INSTANCIA
+============================================================
+
+1. Ya conectado de nuevo por SSH, en el home de ubuntu:
+
+   cd ~
+   git clone https://github.com/USUARIO/REPO.git iot-monitor
+   cd iot-monitor
+
+   (Sustituye USUARIO/REPO por la URL real de tu repositorio.)
+
+============================================================
+5. LEVANTAR EL SERVICIO DE AUTENTICACION (PYTHON)
+============================================================
+
+El servidor C usa un servicio externo para autenticar operadores.
+
+1. En la instancia (SSH), abre una sesión o pestaña nueva.
+2. Ejecuta:
+
+   cd ~/iot-monitor/clients/python
+   nohup python3 auth_service.py >auth.log 2>&1 &
+
+   Esto deja el servicio escuchando en el puerto 6000 en segundo plano.
+
+3. Verifica que el puerto esté escuchando:
+
+   ss -tlnp | grep 6000
+
+4. Haz que el nombre auth.iot.local resuelva a 127.0.0.1 en el host Ubuntu:
+
+   echo "127.0.0.1 auth.iot.local" | sudo tee -a /etc/hosts
+
+============================================================
+6. CONSTRUIR LA IMAGEN DOCKER DEL SERVIDOR
+============================================================
+
+1. Ve a la carpeta del servidor dentro del proyecto:
+
+   cd ~/iot-monitor/server
+
+2. Construye la imagen Docker (usarás Ubuntu 24.04 dentro del contenedor):
+
+   docker build -t iot-monitor-server .
+
+3. Comprueba que la imagen existe:
+
+   docker images
+
+   Deberías ver iot-monitor-server en la lista.
+
+============================================================
+7. EJECUTAR EL CONTENEDOR DEL SERVIDOR
+============================================================
+
+1. Si hay algún contenedor antiguo con el mismo nombre, elimínalo (opcional):
+
+   docker stop iot-monitor-server || true
+   docker rm iot-monitor-server || true
+
+2. Ejecuta el contenedor exponiendo puertos y definiendo variables de entorno:
+
+   docker run -d \
+     --name iot-monitor-server \
+     -p 5000:5000 \
+     -p 5001:5001 \
+     -e PORT=5000 \
+     -e LOG_FILE=/logs/server.log \
+     -e AUTH_HOST=auth.iot.local \
+     -e AUTH_PORT=6000 \
+     iot-monitor-server
+
+3. Verifica que el contenedor está corriendo:
+
+   docker ps
+
+4. Mira los logs del servidor:
+
+   docker logs -f iot-monitor-server
+
+   Deberías ver un mensaje similar a:
+
+   Servidor de monitoreo IoT iniciado. Puerto aplicación: 5000, Puerto HTTP: 5001
+
+============================================================
+8. PROBAR HTTP DEL SERVIDOR DESDE TU PC
+============================================================
+
+1. En tu navegador en Windows, abre:
+
+   http://IP_PUBLICA_EC2:5001/
+
+2. Deberías ver la página HTML del sistema de monitoreo con la tabla de sensores (inicialmente vacía).
+
+============================================================
+9. EJECUTAR SIMULADOR DE SENSORES (EN TU PC)
+============================================================
+
+1. En tu Windows, abre PowerShell.
+2. Ve a la carpeta de los sensores Python:
+
+   cd "C:\Users\JuanD\OneDrive\Escritorio\TELE 23\clients\python"
+
+3. Ejecuta el simulador apuntando a la instancia AWS:
+
+   python sensor_simulator.py --host IP_PUBLICA_EC2 --port 5000
+
+4. Verás en consola que se envían mensajes DATA y que el servidor responde OK DATA RECEIVED.
+5. Si recargas la página HTTP del servidor, ya deberías ver sensores activos y sus últimas mediciones.
+
+============================================================
+10. EJECUTAR CLIENTE OPERADOR (JAVA, EN TU PC)
+============================================================
+
+1. En tu Windows, abre PowerShell.
+2. Ve a la carpeta del cliente Java:
+
+   cd "C:\Users\JuanD\OneDrive\Escritorio\TELE 23\clients\java"
+
+3. Compila y ejecuta el cliente:
+
+   javac OperatorClient.java
+   java OperatorClient
+
+4. En la ventana gráfica:
+   - Host: IP_PUBLICA_EC2
+   - Puerto: 5000
+   - Usuario: operador1
+   - Clave:   clave1
+
+5. Pulsa "Conectar".
+   - El cliente enviará HELLO OPERATOR y luego LOGIN.
+   - El servidor C llamará al servicio de autenticación Python.
+
+6. Pulsa "Suscribirse a alertas".
+   - Comenzarás a recibir mensajes ALERT cuando haya valores fuera de rango.
+
+7. Pulsa "Actualizar sensores".
+   - Verás en la tabla la lista de sensores y sus últimas mediciones.
+
+============================================================
+11. CONFIGURAR DNS EN ROUTE 53 (OPCIONAL PERO RECOMENDADO)
+============================================================
+
+1. En AWS Route 53, crea una zona hospedada para tu dominio o usa una existente.
+2. Crea un registro A:
+
+   Nombre: iot-monitoring.example.com
+   Valor: IP_PUBLICA_EC2
+
+3. Espera a que se propague (unos minutos).
+4. Ahora puedes usar el nombre de dominio en lugar de la IP:
+
+   - HTTP:  http://iot-monitoring.example.com:5001/
+   - Sensores: python sensor_simulator.py --host iot-monitoring.example.com --port 5000
+   - Cliente Java: Host = iot-monitoring.example.com
+
+============================================================
+12. ACTUALIZAR EL SERVIDOR EN EL FUTURO
+============================================================
+
+Cuando cambies el código del servidor y lo subas a GitHub:
+
+1. En la instancia EC2, actualiza el repositorio:
+
+   cd ~/iot-monitor
+   git pull
+
+2. Reconstruye la imagen Docker:
+
+   cd server
+   docker build -t iot-monitor-server .
+
+3. Reinicia el contenedor:
+
+   docker stop iot-monitor-server
+   docker rm iot-monitor-server
+
+   docker run -d \
+     --name iot-monitor-server \
+     -p 5000:5000 \
+     -p 5001:5001 \
+     -e PORT=5000 \
+     -e LOG_FILE=/logs/server.log \
+     -e AUTH_HOST=auth.iot.local \
+     -e AUTH_PORT=6000 \
+     iot-monitor-server
+
+Con estos pasos tienes todo lo necesario para desplegar y ejecutar el servidor, el servicio de autenticación y los clientes en AWS usando Ubuntu 24.04.
